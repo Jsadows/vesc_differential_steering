@@ -40,6 +40,9 @@
 #include <sstream>
 #include <string>
 
+#define ODOM_TIME_INTEVAL 15ms 
+#define IMU_TIME_INTEVAL 10ms 
+
 namespace vesc_driver
 {
 
@@ -77,34 +80,40 @@ VescDriver::VescDriver(const rclcpp::NodeOptions & options)
     return;
   }
 
+  rclcpp::QoS qos_profile(rclcpp::KeepLast(1));  // KeepLast with depth 1
+  qos_profile.reliability(rclcpp::ReliabilityPolicy::Reliable);
+  qos_profile.durability(rclcpp::DurabilityPolicy::Volatile);
+  qos_profile.liveliness(rclcpp::LivelinessPolicy::Automatic);
+
   // create vesc state (telemetry) publisher
-  state_pub_ = create_publisher<VescStateStamped>("sensors/core", rclcpp::QoS{10});
-  imu_pub_ = create_publisher<VescImuStamped>("sensors/imu", rclcpp::QoS{10});
-  imu_std_pub_ = create_publisher<Imu>("sensors/imu/raw", rclcpp::QoS{10});
+  state_pub_ = create_publisher<VescStateStamped>("sensors/core", qos_profile);
+  imu_pub_ = create_publisher<VescImuStamped>("sensors/imu", qos_profile);
+  imu_std_pub_ = create_publisher<Imu>("sensors/imu/raw", qos_profile);
 
   // since vesc state does not include the servo position, publish the commanded
   // servo position as a "sensor"
   servo_sensor_pub_ = create_publisher<Float64>(
-    "sensors/servo_position_command", rclcpp::QoS{10});
+    "sensors/servo_position_command", qos_profile);
 
   // subscribe to motor and servo command topics
   duty_cycle_sub_ = create_subscription<Float64>(
-    "commands/motor/duty_cycle", rclcpp::QoS{10}, std::bind(
+    "commands/motor/duty_cycle", qos_profile, std::bind(
       &VescDriver::dutyCycleCallback, this,
       _1));
   current_sub_ = create_subscription<Float64>(
-    "commands/motor/current", rclcpp::QoS{10}, std::bind(&VescDriver::currentCallback, this, _1));
+    "commands/motor/current", qos_profile, std::bind(&VescDriver::currentCallback, this, _1));
   brake_sub_ = create_subscription<Float64>(
-    "commands/motor/brake", rclcpp::QoS{10}, std::bind(&VescDriver::brakeCallback, this, _1));
+    "commands/motor/brake", qos_profile, std::bind(&VescDriver::brakeCallback, this, _1));
   speed_sub_ = create_subscription<Float64>(
-    "commands/motor/speed", rclcpp::QoS{10}, std::bind(&VescDriver::speedCallback, this, _1));
+    "commands/motor/speed", qos_profile, std::bind(&VescDriver::speedCallback, this, _1));
   position_sub_ = create_subscription<Float64>(
-    "commands/motor/position", rclcpp::QoS{10}, std::bind(&VescDriver::positionCallback, this, _1));
+    "commands/motor/position", qos_profile, std::bind(&VescDriver::positionCallback, this, _1));
   servo_sub_ = create_subscription<Float64>(
-    "commands/servo/position", rclcpp::QoS{10}, std::bind(&VescDriver::servoCallback, this, _1));
+    "commands/servo/position", qos_profile, std::bind(&VescDriver::servoCallback, this, _1));
 
   // create a 50Hz timer, used for state machine & polling VESC telemetry
-  timer_ = create_wall_timer(20ms, std::bind(&VescDriver::timerCallback, this));
+  timer_ = create_wall_timer(ODOM_TIME_INTEVAL, std::bind(&VescDriver::timerCallback, this));
+  timer_imu_ = create_wall_timer(IMU_TIME_INTEVAL, std::bind(&VescDriver::timer_imu_Callback, this));
 }
 
 /* TODO or TO-THINKABOUT LIST
@@ -119,6 +128,38 @@ VescDriver::VescDriver(const rclcpp::NodeOptions & options)
   - what to do if a command parameter is out of range, ignore?
   - try to predict vesc bounds (from vesc config) and command detect bounds errors
 */
+
+void VescDriver::timer_imu_Callback()
+{
+  // VESC interface should not unexpectedly disconnect, but test for it anyway
+  if (!vesc_.isConnected()) {
+    RCLCPP_FATAL(get_logger(), "Unexpectedly disconnected from serial port.");
+    rclcpp::shutdown();
+    return;
+  }
+
+  /*
+   * Driver state machine, modes:
+   *  INITIALIZING - request and wait for vesc version
+   *  OPERATING - receiving commands from subscriber topics
+   */
+  if (driver_mode_ == MODE_INITIALIZING) {
+    // request version number, return packet will update the internal version numbers
+    vesc_.requestFWVersion();
+    if (fw_version_major_ >= 0 && fw_version_minor_ >= 0) {
+      RCLCPP_INFO(
+        get_logger(), "Connected to VESC with firmware version %d.%d",
+        fw_version_major_, fw_version_minor_);
+      driver_mode_ = MODE_OPERATING;
+    }
+  } else if (driver_mode_ == MODE_OPERATING) {
+    // poll for vesc imu
+    vesc_.requestImuData();
+  } else {
+    // unknown mode, how did that happen?
+    assert(false && "unknown driver mode");
+  }
+}
 
 void VescDriver::timerCallback()
 {
@@ -146,8 +187,8 @@ void VescDriver::timerCallback()
   } else if (driver_mode_ == MODE_OPERATING) {
     // poll for vesc state (telemetry)
     vesc_.requestState();
-    // poll for vesc imu
-    vesc_.requestImuData();
+    // // poll for vesc imu
+    // vesc_.requestImuData();
   } else {
     // unknown mode, how did that happen?
     assert(false && "unknown driver mode");

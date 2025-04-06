@@ -73,8 +73,13 @@ VescToOdom::VescToOdom(const rclcpp::NodeOptions & options)
 
   publish_tf_ = declare_parameter("publish_tf", publish_tf_);
 
+  rclcpp::QoS qos_profile(rclcpp::KeepLast(1));  // KeepLast with depth 1
+  qos_profile.reliability(rclcpp::ReliabilityPolicy::Reliable);
+  qos_profile.durability(rclcpp::DurabilityPolicy::Volatile);
+  qos_profile.liveliness(rclcpp::LivelinessPolicy::Automatic);
+
   // create odom publisher
-  odom_pub_ = create_publisher<Odometry>("odom", 10);
+  odom_pub_ = create_publisher<Odometry>("odom", qos_profile);
 
   // create tf broadcaster
   if (publish_tf_) {
@@ -83,7 +88,7 @@ VescToOdom::VescToOdom(const rclcpp::NodeOptions & options)
 
   // subscribe to vesc state and. optionally, servo command
   vesc_state_sub_ = create_subscription<VescStateStamped>(
-    "sensors/core", 10, std::bind(&VescToOdom::vescStateCallback, this, _1));
+    "sensors/core", qos_profile, std::bind(&VescToOdom::vescStateCallback, this, _1));
 
   if (use_servo_cmd_) {
     servo_sub_ = create_subscription<Float64>(
@@ -99,7 +104,7 @@ void VescToOdom::vescStateCallback(const VescStateStamped::SharedPtr state)
   }
 
   // convert to engineering units
-  double current_speed = (-state->state.speed - speed_to_erpm_offset_) / speed_to_erpm_gain_;
+  double current_speed = -(-state->state.speed - speed_to_erpm_offset_) / speed_to_erpm_gain_;
   if (std::fabs(current_speed) < 0.05) {
     current_speed = 0.0;
   }

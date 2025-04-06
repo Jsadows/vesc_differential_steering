@@ -55,9 +55,14 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
   steering_to_servo_offset_ =
     declare_parameter<double>("steering_angle_to_servo_offset");
 
+  rclcpp::QoS qos_profile(rclcpp::KeepLast(1));  // KeepLast with depth 1
+  qos_profile.reliability(rclcpp::ReliabilityPolicy::Reliable);
+  qos_profile.durability(rclcpp::DurabilityPolicy::Volatile);
+  qos_profile.liveliness(rclcpp::LivelinessPolicy::Automatic);
+
   // create publishers to vesc electric-RPM (speed) and servo commands
-  erpm_pub_ = create_publisher<Float64>("commands/motor/speed", 10);
-  servo_pub_ = create_publisher<Float64>("commands/servo/position", 10);
+  erpm_pub_ = create_publisher<Float64>("commands/motor/speed", qos_profile);
+  servo_pub_ = create_publisher<Float64>("commands/servo/position", qos_profile);
 
   // subscribe to ackermann topic
   ackermann_sub_ = create_subscription<AckermannDriveStamped>(
